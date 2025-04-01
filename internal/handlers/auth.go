@@ -1,15 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"time"
 	"todo-auth/internal/models"
 	"todo-auth/pkg/db"
 	jwtsecret "todo-auth/pkg/jwt"
+	pb "todo-auth/proto" // Импорт сгенерированного пакета
 
 	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
@@ -21,12 +21,9 @@ var (
 	validate  = validator.New()
 )
 
-func getJWTSecret() string {
-	if os.Getenv("APP_ENV") != "production" {
-		return os.Getenv("JWT_SECRET_TESTING")
-	} else {
-		return os.Getenv("JWT_SECRET")
-	}
+// AuthServer реализует интерфейс AuthServiceServer из auth_grpc.pb.go
+type AuthServer struct {
+	pb.UnimplementedAuthServiceServer // Встраиваем для совместимости
 }
 
 func Register(w http.ResponseWriter, r *http.Request) {
@@ -92,18 +89,14 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
 }
 
-func VerifyToken(w http.ResponseWriter, r *http.Request) {
-	// Читаем тело запроса как строку
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Ошибка чтения запроса", http.StatusBadRequest)
-		return
-	}
-	tokenStr := string(body)
+// VerifyToken реализует метод gRPC
+func (s *AuthServer) VerifyToken(ctx context.Context, req *pb.TokenRequest) (*pb.TokenResponse, error) {
+	tokenStr := req.GetToken()
 	if tokenStr == "" {
-		http.Error(w, "Токен не предоставлен", http.StatusBadRequest)
-		return
+		return nil, fmt.Errorf("токен не предоставлен")
 	}
+
+	fmt.Printf("Получен токен: %s\n", tokenStr) // Логирование для отладки
 
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -111,31 +104,20 @@ func VerifyToken(w http.ResponseWriter, r *http.Request) {
 		}
 		return jwtSecret, nil
 	})
-
 	if err != nil || !token.Valid {
-		http.Error(w, "Неверный токен", http.StatusUnauthorized)
-		return
+		return nil, fmt.Errorf("неверный токен: %v", err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		http.Error(w, "Неверные данные токена", http.StatusUnauthorized)
-		return
+		return nil, fmt.Errorf("неверные данные токена")
 	}
 
-	userID, ok := claims["user_id"].(float64)
-	if !ok {
-		http.Error(w, "ID пользователя не найден в токене", http.StatusUnauthorized)
-		return
-	}
-	role, ok := claims["role"].(string)
-	if !ok {
-		http.Error(w, "Роль не найдена в токене", http.StatusUnauthorized)
-		return
-	}
+	userID, _ := claims["user_id"].(float64)
+	role, _ := claims["role"].(string)
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"user_id": int(userID),
-		"role":    role,
-	})
+	return &pb.TokenResponse{
+		UserId: int32(userID),
+		Role:   role,
+	}, nil
 }
